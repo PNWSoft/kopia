@@ -37,7 +37,7 @@ import (
 )
 
 // DefaultCheckpointInterval is the default frequency of mid-upload checkpointing.
-const DefaultCheckpointInterval = 45 * time.Minute
+const DefaultCheckpointInterval = 24 * time.Hour
 
 var (
 	uploadLog    = logging.Module("uploader")
@@ -1414,3 +1414,4 @@ func (u *Uploader) wrapIgnorefs(logger logging.Logger, entry fs.Directory, polic
 		u.stats.AddExcluded(md)
 	}))
 }
+
