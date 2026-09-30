@@ -95,13 +95,14 @@ func TestBuildExtraSuccess(t *testing.T) {
 		{
 			name: "ExtendBlobRetentionStats",
 			stats: &ExtendBlobRetentionStats{
-				ToExtendBlobCount: 10,
-				ExtendedBlobCount: 10,
-				RetentionPeriod:   (time.Hour * 24 * 15).String(),
+				ToExtendBlobCount:            10,
+				ExtendedBlobCount:            10,
+				SkippedUnreferencedBlobCount: 3,
+				RetentionPeriod:              (time.Hour * 24 * 15).String(),
 			},
 			expected: Extra{
 				Kind: extendBlobRetentionStatsKind,
-				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"retentionPeriod":"360h0m0s"}`),
+				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"skippedUnreferencedBlobCount":3,"retentionPeriod":"360h0m0s"}`),
 			},
 		},
 		{
@@ -291,12 +292,13 @@ func TestBuildFromExtraSuccess(t *testing.T) {
 			name: "ExtendBlobRetentionStats",
 			stats: Extra{
 				Kind: extendBlobRetentionStatsKind,
-				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"retentionPeriod":"360h0m0s"}`),
+				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"skippedUnreferencedBlobCount":3,"retentionPeriod":"360h0m0s"}`),
 			},
 			expected: &ExtendBlobRetentionStats{
-				ToExtendBlobCount: 10,
-				ExtendedBlobCount: 10,
-				RetentionPeriod:   (time.Hour * 24 * 15).String(),
+				ToExtendBlobCount:            10,
+				ExtendedBlobCount:            10,
+				SkippedUnreferencedBlobCount: 3,
+				RetentionPeriod:              (time.Hour * 24 * 15).String(),
 			},
 		},
 		{

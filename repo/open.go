@@ -428,7 +428,11 @@ func wrapLockingStorage(st blob.Storage, r format.BlobStorageConfiguration) blob
 		for _, prefix := range prefixes {
 			if strings.HasPrefix(string(id), string(prefix)) {
 				opts.RetentionMode = r.RetentionMode
-				opts.RetentionPeriod = r.RetentionPeriod
+				// PNWSoft patch: metadata blobs (index/epoch/format/manifest-pack) take the
+				// longer retention tier so a superseded version survives long enough for a
+				// point-in-time view to still reconstruct; data packs take the configured
+				// (shorter) period. See repo/pnw_retention.go.
+				opts.RetentionPeriod = RetentionPeriodForBlob(id, r)
 
 				break
 			}
