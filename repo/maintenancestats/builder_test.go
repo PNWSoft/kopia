@@ -99,10 +99,13 @@ func TestBuildExtraSuccess(t *testing.T) {
 				ExtendedBlobCount:            10,
 				SkippedUnreferencedBlobCount: 3,
 				RetentionPeriod:              (time.Hour * 24 * 15).String(),
+				MetadataBlobCount:            7,
+				MetadataRetentionPeriod:      (time.Hour * 24 * 60).String(),
+				RefusedShortenCount:          2,
 			},
 			expected: Extra{
 				Kind: extendBlobRetentionStatsKind,
-				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"skippedUnreferencedBlobCount":3,"retentionPeriod":"360h0m0s"}`),
+				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"skippedUnreferencedBlobCount":3,"retentionPeriod":"360h0m0s","metadataBlobCount":7,"metadataRetentionPeriod":"1440h0m0s","refusedShortenCount":2}`),
 			},
 		},
 		{
@@ -292,13 +295,16 @@ func TestBuildFromExtraSuccess(t *testing.T) {
 			name: "ExtendBlobRetentionStats",
 			stats: Extra{
 				Kind: extendBlobRetentionStatsKind,
-				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"skippedUnreferencedBlobCount":3,"retentionPeriod":"360h0m0s"}`),
+				Data: []byte(`{"toExtendBlobCount":10,"extendedBlobCount":10,"skippedUnreferencedBlobCount":3,"retentionPeriod":"360h0m0s","metadataBlobCount":7,"metadataRetentionPeriod":"1440h0m0s","refusedShortenCount":2}`),
 			},
 			expected: &ExtendBlobRetentionStats{
 				ToExtendBlobCount:            10,
 				ExtendedBlobCount:            10,
 				SkippedUnreferencedBlobCount: 3,
 				RetentionPeriod:              (time.Hour * 24 * 15).String(),
+				MetadataBlobCount:            7,
+				MetadataRetentionPeriod:      (time.Hour * 24 * 60).String(),
+				RefusedShortenCount:          2,
 			},
 		},
 		{
