@@ -2,6 +2,7 @@ package maintenance
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -10,6 +11,7 @@ import (
 	"github.com/kopia/kopia/internal/blobparam"
 	"github.com/kopia/kopia/internal/contentlog"
 	"github.com/kopia/kopia/internal/contentlog/logparam"
+	"github.com/kopia/kopia/internal/retry"
 	"github.com/kopia/kopia/internal/stats"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/blob"
@@ -40,7 +42,15 @@ func DeleteUnreferencedPacks(ctx context.Context, rep repo.DirectRepositoryWrite
 
 	const deleteQueueSize = 100
 
-	var unreferenced, deleted, retained stats.CountSum
+	var deleted stats.CountSum
+
+	// PNWSoft patch: collected under a bounded retry below (see comment at the enumeration).
+	var (
+		toDelete                         []blob.Metadata
+		listMu                           sync.Mutex
+		unreferencedCount, retainedCount uint32
+		unreferencedSize, retainedSize   int64
+	)
 
 	var eg errgroup.Group
 
@@ -93,61 +103,91 @@ func DeleteUnreferencedPacks(ctx context.Context, rep repo.DirectRepositoryWrite
 
 	cutoffTime = cutoffTime.Add(cutoffTimeSlack)
 
-	// iterate all pack blobs + session blobs and keep ones that are too young or
-	// belong to alive sessions.
-	if err := rep.ContentManager().IterateUnreferencedPacks(ctx, prefixes, opt.Parallel, func(bm blob.Metadata) error {
-		if bm.Timestamp.After(cutoffTime) {
-			retained.Add(bm.Length)
+	// PNWSoft patch: IterateUnreferencedPacks below is a streamed list walk that the storage
+	// layer does not retry (a stream can't resume mid-way), so a single transient B2 wsarecv was
+	// failing full-delete-blobs outright (observed 2026-06-09 and 2026-06-13, surfacing as a
+	// FAILED backup email). Collect the to-delete set under a bounded retry -- resetting the
+	// slice and recomputing counts each attempt so a restart can't double-send a blob to the
+	// delete workers (delete, unlike retention-extend, is not idempotent on re-send) -- then
+	// feed the already-running workers once enumeration has fully succeeded. Mirrors blob_retain.go.
+	if _, rerr := retry.WithExponentialBackoffMaxRetries(ctx, maintEnumMaxRetries,
+		"enumerate unreferenced packs",
+		retry.NoValueFn(func() error {
+			var unreferenced, retained stats.CountSum // fresh per attempt to keep counts accurate on retry
 
-			contentlog.Log3(ctx, log,
-				"preserving pack - after cutoff time",
-				blobparam.BlobID("blobID", bm.BlobID),
-				logparam.Time("cutoffTime", cutoffTime),
-				logparam.Time("timestamp", bm.Timestamp))
+			listMu.Lock()
+			toDelete = toDelete[:0]
+			listMu.Unlock()
 
-			return nil
-		}
+			// iterate all pack blobs + session blobs and keep ones that are too young or
+			// belong to alive sessions.
+			if e := rep.ContentManager().IterateUnreferencedPacks(ctx, prefixes, opt.Parallel, func(bm blob.Metadata) error {
+				if bm.Timestamp.After(cutoffTime) {
+					retained.Add(bm.Length)
 
-		if age := cutoffTime.Sub(bm.Timestamp); age < safety.PackDeleteMinAge {
-			retained.Add(bm.Length)
+					contentlog.Log3(ctx, log,
+						"preserving pack - after cutoff time",
+						blobparam.BlobID("blobID", bm.BlobID),
+						logparam.Time("cutoffTime", cutoffTime),
+						logparam.Time("timestamp", bm.Timestamp))
 
-			contentlog.Log2(ctx, log,
-				"preserving pack - below min age",
-				blobparam.BlobID("blobID", bm.BlobID),
-				logparam.Duration("age", age))
+					return nil
+				}
 
-			return nil
-		}
+				if age := cutoffTime.Sub(bm.Timestamp); age < safety.PackDeleteMinAge {
+					retained.Add(bm.Length)
 
-		sid := content.SessionIDFromBlobID(bm.BlobID)
-		if s, ok := activeSessions[sid]; ok {
-			if age := cutoffTime.Sub(s.CheckpointTime); age < safety.SessionExpirationAge {
-				retained.Add(bm.Length)
+					contentlog.Log2(ctx, log,
+						"preserving pack - below min age",
+						blobparam.BlobID("blobID", bm.BlobID),
+						logparam.Duration("age", age))
 
-				contentlog.Log2(ctx, log,
-					"preserving pack - part of active session",
-					blobparam.BlobID("blobID", bm.BlobID),
-					logparam.String("sessionID", string(sid)))
+					return nil
+				}
+
+				sid := content.SessionIDFromBlobID(bm.BlobID)
+				if s, ok := activeSessions[sid]; ok {
+					if age := cutoffTime.Sub(s.CheckpointTime); age < safety.SessionExpirationAge {
+						retained.Add(bm.Length)
+
+						contentlog.Log2(ctx, log,
+							"preserving pack - part of active session",
+							blobparam.BlobID("blobID", bm.BlobID),
+							logparam.String("sessionID", string(sid)))
+
+						return nil
+					}
+				}
+
+				unreferenced.Add(bm.Length)
+
+				listMu.Lock()
+				toDelete = append(toDelete, bm)
+				listMu.Unlock()
 
 				return nil
+			}); e != nil {
+				contentlog.Log1(ctx, log, "unreferenced-pack enumeration failed, will retry if attempts remain",
+					logparam.Error("error", e))
+				return e
 			}
-		}
 
-		unreferenced.Add(bm.Length)
+			unreferencedCount, unreferencedSize = unreferenced.Approximate()
+			retainedCount, retainedSize = retained.Approximate()
 
-		if !opt.DryRun {
+			return nil
+		}), retry.Always); rerr != nil {
+		return nil, errors.Wrap(rerr, "error looking for unreferenced pack blobs")
+	}
+
+	// feed the already-running delete workers, then close the channel.
+	if !opt.DryRun {
+		for _, bm := range toDelete {
 			unused <- bm
 		}
-
-		return nil
-	}); err != nil {
-		return nil, errors.Wrap(err, "error looking for unreferenced pack blobs")
 	}
 
 	close(unused)
-
-	unreferencedCount, unreferencedSize := unreferenced.Approximate()
-	retainedCount, retainedSize := retained.Approximate()
 
 	result := &maintenancestats.DeleteUnreferencedPacksStats{
 		UnreferencedPackCount: uint64(unreferencedCount),
