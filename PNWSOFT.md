@@ -41,6 +41,17 @@ snapshotted at all.
 rewriting an already-locked index fails the same way. **Do not lower this while Object Lock is
 enabled**, and suspect it first if a long-running snapshot starts failing on index writes.
 
+**A `--checkpoint-interval 0` on the command line does not substitute for this patch.** That flag
+is a no-op: `cli/command_snapshot_create.go` guards the assignment with `if interval != 0`, so
+passing 0 never overwrites anything and `CheckpointInterval` keeps its constructor default — which
+is the constant above. On stock kopia the same command line therefore yields 45 minutes and still
+fails. 0 cannot mean "disabled" because `getTicker` is `time.Tick`, which rejects a zero duration;
+hence the guard. The flag's help text also still reads *"must be <= 45 minutes"*, stale here —
+validation compares against `DefaultCheckpointInterval`, now 24h.
+
+Upstream has never touched `snapshot/upload/` — 0 of the 200 commits between `775fadcfcf0e` and
+`87d15ded` — so this mechanism has been stable across rebases so far.
+
 ## 2. Chunk-parallel restore — `--parallel-chunks`
 
 `cli/command_restore.go`, `repo/object/parallel_reader.go` (+test),
